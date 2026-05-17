@@ -67,27 +67,48 @@ Opens a browser UI where you can invoke any tool by hand. Useful to verify:
 
 ## Claude Code integration
 
-Add to `%USERPROFILE%\.claude\settings.json` under `mcpServers`:
+The recommended way is the `claude mcp add` command — it writes the user-scope config for you and uses `uvx` to fetch/run directly from GitHub (no clone needed):
 
-```json
-{
-  "mcpServers": {
-    "kanboard": {
-      "command": "uv",
-      "args": ["--directory", "d:\\mcp-kanboard", "run", "mcp-kanboard"],
-      "env": {
-        "KANBOARD_URL": "http://localhost/kanboard/jsonrpc.php",
-        "KANBOARD_USERNAME": "jsonrpc",
-        "KANBOARD_API_TOKEN": "PASTE_TOKEN_HERE"
-      }
-    }
-  }
-}
+```powershell
+claude mcp add kanboard -s user `
+  -e KANBOARD_URL=http://localhost/kanboard `
+  -e KANBOARD_USERNAME=jsonrpc `
+  -e KANBOARD_API_TOKEN=<your_token> `
+  -- uvx --from git+https://github.com/mrquanga3/mcp-kanboard mcp-kanboard
 ```
 
-Restart Claude Code. Try: _"list my Kanboard projects"_.
+Restart Claude Code. Verify with `claude mcp list` — should show `kanboard ✓ Connected`.
 
-To switch between local and remote: edit the `env` block and restart Claude Code.
+To switch between local and remote, or change the token: `claude mcp remove kanboard -s user` and re-add, or edit `%USERPROFILE%\.claude.json` under `mcpServers.kanboard.env` and restart Claude Code.
+
+To pull the latest version after a `git push` to this repo:
+
+```powershell
+uvx --refresh --from git+https://github.com/mrquanga3/mcp-kanboard mcp-kanboard --help
+```
+
+Then restart Claude Code.
+
+## Using it from Claude Code
+
+Once registered, just describe what you want in natural language. Claude picks the right `kb_*` tool. Examples:
+
+| Prompt | Tools invoked |
+|---|---|
+| _"liệt kê các project trên Kanboard"_ | `kb_list_projects` |
+| _"show tasks in project 1 that are still open"_ | `kb_list_tasks(project_id=1, status_id=1)` |
+| _"create a task 'Fix login bug' in project 1 assigned to me, due tomorrow"_ | `kb_me` + `kb_create_task` |
+| _"move task #42 to the 'Done' column"_ | `kb_get_task` (find current column) → `kb_move_task_position` |
+| _"add a comment 'Reviewed' to task 42"_ | `kb_me` + `kb_create_comment` |
+| _"find all overdue tasks assigned to user 'alice' in project 1"_ | `kb_search_tasks(project_id=1, query="assignee:alice due:overdue")` |
+| _"upload screenshot.png as an attachment on task 42"_ | `kb_upload_task_file(local_path=..., filename=...)` |
+| _"delete task 42"_ | `kb_delete_task` — first call errors asking for `confirm=true`; Claude confirms with you then retries |
+
+**Search DSL** (`kb_search_tasks`): Kanboard accepts filters like `assignee:me`, `status:open`, `color:red`, `category:Bug`, `due:tomorrow`, `tag:urgent`. Combine with spaces (AND): `assignee:me status:open due:overdue`.
+
+**Destructive tools** (delete_*, remove_user) refuse to run without `confirm=true`. Claude will surface the error and ask you to confirm before re-calling — this is the safety net, don't disable it.
+
+**Switching context**: if you have both local and remote Kanboards, register them as two separate MCP servers with different names (e.g. `kanboard_local` and `kanboard_remote`) and different `-e` env values. Each gets its own `kb_*` tool namespace in Claude Code.
 
 ## Tool reference
 
