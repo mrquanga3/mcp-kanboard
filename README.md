@@ -12,17 +12,37 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes 
 
 ## Prerequisites
 
-- Python 3.11+
-- [`uv`](https://docs.astral.sh/uv/) (or `pip` + a venv)
+- Windows 10/11 (the helper scripts are PowerShell; the Python code is cross-platform)
+- Python 3.11+, [`uv`](https://docs.astral.sh/uv/), and (for claude.ai web) [ngrok](https://ngrok.com/download)
 - A reachable Kanboard instance and an API token from either:
   - **Application token** (recommended for admin/automation): Kanboard → Settings → API. Username is always `jsonrpc`.
   - **Personal token**: Kanboard → My Profile → Actions → API. Username is your login.
 
-## Install
+## Install (fresh machine)
 
 ```powershell
-cd d:\mcp-kanboard
-uv sync
+git clone https://github.com/mrquanga3/mcp-kanboard.git
+cd mcp-kanboard
+.\scripts\setup.ps1
+```
+
+`setup.ps1` is idempotent: re-running on a configured machine reports "already installed" for each step and only acts on what's missing. It:
+
+1. Installs Python 3.13 via winget if not present
+2. Installs `uv` via winget (or the official PowerShell installer)
+3. Installs `ngrok` via winget and prompts for your authtoken (skip with `-SkipNgrok` if you only want stdio / Claude Code mode)
+4. Runs `uv sync` to materialize the `.venv`
+5. Copies `.env.example` to `.env` if missing, and flags any required keys still on placeholder values
+
+Then edit `.env` to fill `KANBOARD_URL`, `KANBOARD_API_TOKEN`, and `MCP_PASSPHRASE`.
+
+For a non-Windows machine or fully manual install:
+
+```bash
+git clone https://github.com/mrquanga3/mcp-kanboard.git
+cd mcp-kanboard
+uv sync                              # installs deps
+cp .env.example .env && $EDITOR .env # fill in values
 ```
 
 ## Configure

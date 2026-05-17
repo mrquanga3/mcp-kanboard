@@ -17,10 +17,6 @@
 .PARAMETER Port
   Local port for the MCP HTTP server. Default 8765.
 
-.PARAMETER Passphrase
-  Override the passphrase from .env / env. NOT recommended (visible in
-  shell history); set MCP_PASSPHRASE in .env instead.
-
 .PARAMETER Insecure
   Pass --insecure-no-auth to mcp-kanboard. No login required. Use ONLY
   for a quick test, then stop immediately.
@@ -34,7 +30,6 @@
 [CmdletBinding()]
 param(
     [int]$Port = 8765,
-    [string]$Passphrase = "",
     [switch]$Insecure
 )
 
@@ -42,6 +37,21 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $statePath = Join-Path $repoRoot ".web-mcp-state.json"
 $envPath = Join-Path $repoRoot ".env"
+
+# --- Prerequisite check ---
+$missing = @()
+foreach ($cmd in @("uv", "ngrok")) {
+    if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) { $missing += $cmd }
+}
+if ($missing) {
+    Write-Host "[!] Missing on PATH: $($missing -join ', ')" -ForegroundColor Red
+    Write-Host "    Run first:  .\scripts\setup.ps1" -ForegroundColor Yellow
+    exit 1
+}
+if (-not (Test-Path (Join-Path $repoRoot ".venv"))) {
+    Write-Host "[!] .venv not found. Run first:  .\scripts\setup.ps1" -ForegroundColor Yellow
+    exit 1
+}
 
 function Stop-OnPort {
     param([int]$LocalPort)
@@ -84,18 +94,18 @@ Get-Process -Name "ngrok" -ErrorAction SilentlyContinue | Stop-Process -Force -E
 Stop-OnPort -LocalPort $Port
 Start-Sleep -Milliseconds 800
 
-# 2. Resolve passphrase
+# 2. Resolve passphrase from env / .env
 if (-not $Insecure) {
-    if (-not $Passphrase) { $Passphrase = $env:MCP_PASSPHRASE }
-    if (-not $Passphrase) { $Passphrase = Read-DotenvValue -Path $envPath -Key "MCP_PASSPHRASE" }
-    if (-not $Passphrase) {
+    $resolved = $env:MCP_PASSPHRASE
+    if (-not $resolved) { $resolved = Read-DotenvValue -Path $envPath -Key "MCP_PASSPHRASE" }
+    if (-not $resolved) {
         Write-Host ""
         Write-Host "[!] MCP_PASSPHRASE not found in environment or .env." -ForegroundColor Red
         Write-Host "    Add a line to .env:    MCP_PASSPHRASE=<any string you'll remember>"
         Write-Host "    Then re-run this script. Or pass -Insecure for a no-auth test."
         exit 1
     }
-    $env:MCP_PASSPHRASE = $Passphrase
+    $env:MCP_PASSPHRASE = $resolved
 } else {
     Remove-Item Env:\MCP_PASSPHRASE -ErrorAction SilentlyContinue
 }
