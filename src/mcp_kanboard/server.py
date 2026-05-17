@@ -91,6 +91,16 @@ def main() -> None:
     import uvicorn
 
     mcp_app = server.streamable_http_app()
+    
+    # Add route for unique /kanboard-mcp path to prevent URL reuse conflict in Claude.ai
+    from starlette.routing import Route
+    for route in mcp_app.routes:
+        if isinstance(route, Route) and (route.path == path or route.path == "/mcp"):
+            mcp_app.routes.append(
+                Route("/kanboard-mcp", endpoint=route.endpoint, methods=list(route.methods))
+            )
+            break
+            
     mcp_app = _normalize_accept_asgi(mcp_app)
     path = server.settings.streamable_http_path
 
