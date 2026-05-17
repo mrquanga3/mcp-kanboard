@@ -207,7 +207,7 @@ if (-not $publicUrl) {
     Stop-Process -Id $ngrokProc.Id -Force -ErrorAction SilentlyContinue
     exit 1
 }
-$mcpUrl = "$publicUrl/mcp"
+$mcpUrl = "$publicUrl/kanboard-mcp"
 
 # 6. Save state
 $state = [PSCustomObject]@{
