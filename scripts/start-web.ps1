@@ -190,18 +190,32 @@ $ngrokProc = Start-Process -FilePath "ngrok" -ArgumentList @("http", "$Port", "-
 Start-Sleep -Seconds 3
 
 # 5. Read public URL
-Write-Host "[4/5] Reading public URL from http://127.0.0.1:4040/api/tunnels..." -ForegroundColor Cyan
+# Probe each ngrok agent's local API (4040, 4041, ...) and pick the tunnel
+# whose config.addr points at OUR $Port. Without this filter, when another
+# ngrok agent (e.g. for mcp-gitlab) is already running, we'd grab its URL
+# and claude.ai would land on the wrong server's OAuth form.
+Write-Host "[4/5] Reading public URL for port $Port from ngrok local APIs (4040-4044)..." -ForegroundColor Cyan
 $publicUrl = $null
+$portPattern = ":$Port(`$|/)"
 for ($i = 0; $i -lt 12; $i++) {
-    try {
-        $tunnels = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 2 -ErrorAction Stop
-        $https = $tunnels.tunnels | Where-Object { $_.proto -eq "https" } | Select-Object -First 1
-        if ($https) { $publicUrl = $https.public_url; break }
-    } catch {}
+    foreach ($apiPort in 4040..4044) {
+        try {
+            $tunnels = Invoke-RestMethod -Uri "http://127.0.0.1:$apiPort/api/tunnels" -TimeoutSec 2 -ErrorAction Stop
+            $https = $tunnels.tunnels | Where-Object {
+                $_.proto -eq "https" -and $_.config.addr -match $portPattern
+            } | Select-Object -First 1
+            if ($https) { $publicUrl = $https.public_url; break }
+        } catch {}
+    }
+    if ($publicUrl) { break }
     Start-Sleep -Seconds 1
 }
 if (-not $publicUrl) {
-    Write-Host "[!] Could not read ngrok URL. Authenticated? Try: ngrok config add-authtoken <TOKEN>" -ForegroundColor Red
+    Write-Host "[!] Could not find an ngrok tunnel for port $Port." -ForegroundColor Red
+    Write-Host "    If another ngrok agent is already running (e.g. for another MCP)," -ForegroundColor Yellow
+    Write-Host "    the free plan only allows one agent. Stop the other one or use a" -ForegroundColor Yellow
+    Write-Host "    paid plan with multiple tunnels under a single agent." -ForegroundColor Yellow
+    Write-Host "    Otherwise check: ngrok config add-authtoken <TOKEN>" -ForegroundColor Yellow
     Stop-Process -Id $mcpProc.Id -Force -ErrorAction SilentlyContinue
     Stop-Process -Id $ngrokProc.Id -Force -ErrorAction SilentlyContinue
     exit 1
