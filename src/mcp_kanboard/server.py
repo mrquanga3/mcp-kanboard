@@ -27,6 +27,33 @@ def _build(host: str = "127.0.0.1", port: int = 8765, disable_host_check: bool =
     return instance
 
 
+_CANONICAL_ACCEPT = b"application/json, text/event-stream"
+
+
+def _normalize_accept_asgi(app):
+    """Force the Accept header to MCP's required value.
+
+    FastMCP's streamable-http handler 406s any request whose Accept header
+    doesn't include both 'application/json' and 'text/event-stream'. Some
+    MCP clients (notably claude.ai's connector backend) send 'Accept: */*'
+    and get rejected. MCP only ever returns those two content types, so
+    rewriting the header is safe.
+    """
+
+    async def middleware(scope, receive, send):
+        if scope["type"] != "http":
+            await app(scope, receive, send)
+            return
+        raw_headers = list(scope.get("headers") or [])
+        rewritten = [(k, v) for k, v in raw_headers if k.lower() != b"accept"]
+        rewritten.append((b"accept", _CANONICAL_ACCEPT))
+        scope = dict(scope)
+        scope["headers"] = rewritten
+        await app(scope, receive, send)
+
+    return middleware
+
+
 def _bearer_auth_asgi(app, token: str):
     expected = f"Bearer {token}".encode()
 
@@ -92,6 +119,7 @@ def main() -> None:
     import uvicorn
 
     app = server.streamable_http_app()
+    app = _normalize_accept_asgi(app)
     path = server.settings.streamable_http_path
 
     if args.insecure_no_auth:
