@@ -114,17 +114,42 @@ if (-not $Insecure) {
 Write-Host "[2/5] Starting mcp-kanboard --http on port $Port..." -ForegroundColor Cyan
 $mcpArgs = @("run", "mcp-kanboard", "--http", "--port", "$Port")
 if ($Insecure) { $mcpArgs += "--insecure-no-auth" }
-$mcpProc = Start-Process -FilePath "uv" -ArgumentList $mcpArgs `
-    -WorkingDirectory $repoRoot -PassThru -WindowStyle Hidden
-Start-Sleep -Seconds 3
 
-if ($mcpProc.HasExited) {
-    Write-Host "[!] mcp-kanboard exited immediately (exit $($mcpProc.ExitCode)). Check Kanboard env vars in .env." -ForegroundColor Red
-    exit 1
+$logPath = Join-Path $repoRoot "mcp-server.log"
+Remove-Item $logPath -ErrorAction SilentlyContinue
+
+$mcpProc = Start-Process -FilePath "uv" -ArgumentList $mcpArgs `
+    -WorkingDirectory $repoRoot -PassThru -WindowStyle Hidden `
+    -RedirectStandardOutput $logPath -RedirectStandardError $logPath
+
+Write-Host "  Waiting up to 12s for port $Port to start listening..." -ForegroundColor Gray
+$listening = $false
+for ($i = 0; $i -lt 12; $i++) {
+    if ($mcpProc.HasExited) {
+        break
+    }
+    $listening = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+    if ($listening) {
+        break
+    }
+    Start-Sleep -Seconds 1
 }
-$listening = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-if (-not $listening) {
-    Write-Host "[!] Port $Port is not listening after 3s. mcp-kanboard may have failed silently." -ForegroundColor Red
+
+if ($mcpProc.HasExited -or -not $listening) {
+    if ($mcpProc.HasExited) {
+        Write-Host "[!] mcp-kanboard exited immediately (exit $($mcpProc.ExitCode))." -ForegroundColor Red
+    } else {
+        Write-Host "[!] Port $Port is not listening after 12s. mcp-kanboard may have failed silently." -ForegroundColor Red
+        Stop-Process -Id $mcpProc.Id -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path $logPath) {
+        Write-Host ""
+        Write-Host "--- Server Log Output (from mcp-server.log) ---" -ForegroundColor Yellow
+        Get-Content $logPath
+        Write-Host "------------------------------------------------" -ForegroundColor Yellow
+    } else {
+        Write-Host "[!] No log file found at $logPath." -ForegroundColor Red
+    }
     exit 1
 }
 Write-Host "  MCP listening on http://127.0.0.1:$Port/mcp (PID $($mcpProc.Id))"
