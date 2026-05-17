@@ -6,6 +6,13 @@ venv/
 .env
 .claude/settings.local.json
 .web-mcp-state.json
+
+# Logs from scripts/start-web.ps1 (may contain ngrok URL, OAuth attempts)
+*.log
+mcp-server.log
+mcp-server-err.log
+ngrok.log
+ngrok-err.log
 dist/
 build/
 .uv-cache/
