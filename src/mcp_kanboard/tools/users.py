@@ -76,6 +76,38 @@ def register(mcp: FastMCP, client: KanboardClient) -> None:
         )
 
     @mcp.tool()
+    def kb_add_project_user(
+        project_id: int,
+        user_id: int,
+        role: str | None = None,
+    ) -> bool:
+        """Grant a user access to a project. role: 'project-manager' | 'project-member' | 'project-viewer'."""
+        params: dict[str, Any] = {"project_id": project_id, "user_id": user_id}
+        if role is not None:
+            params["role"] = role
+        return bool(client.call("addProjectUser", params))
+
+    @mcp.tool()
+    def kb_remove_project_user(project_id: int, user_id: int) -> bool:
+        """Remove a user's access from a project."""
+        return bool(
+            client.call(
+                "removeProjectUser",
+                {"project_id": project_id, "user_id": user_id},
+            )
+        )
+
+    @mcp.tool()
+    def kb_get_project_users(project_id: int) -> dict[str, Any]:
+        """Get all members (users) of a project. Returns a dict mapping user_id to username/name."""
+        return client.call("getProjectUsers", {"project_id": project_id}) or {}
+
+    @mcp.tool()
+    def kb_get_assignable_users(project_id: int) -> dict[str, Any]:
+        """Get users eligible to be assigned to tasks in a project. Returns a dict mapping user_id to username/name."""
+        return client.call("getAssignableUsers", {"project_id": project_id}) or {}
+
+    @mcp.tool()
     def kb_delete_user(user_id: int, confirm: bool = False) -> dict[str, Any]:
         """Permanently delete a user. Set confirm=true to proceed."""
         require_confirm(confirm, f"delete user {user_id}")
