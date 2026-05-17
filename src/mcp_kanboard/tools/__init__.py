@@ -7,6 +7,7 @@ from mcp_kanboard.tools import (
     categories,
     comments,
     files,
+    groups,
     projects,
     search,
     subtasks,
@@ -27,6 +28,7 @@ _MODULES = (
     search,
     time_tracking,
     files,
+    groups,
 )
 
 
