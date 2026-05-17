@@ -80,8 +80,32 @@ function Read-DotenvValue {
     return ""
 }
 
+function Stop-NgrokOnPort {
+    param([int]$LocalPort)
+    try {
+        $procs = Get-CimInstance Win32_Process -Filter "Name = 'ngrok.exe'" -ErrorAction SilentlyContinue
+        foreach ($p in $procs) {
+            if ($p.CommandLine -match "http\s+$LocalPort") {
+                Write-Host "  Stopping ngrok (PID $($p.ProcessId)) targeting port $LocalPort..."
+                Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {}
+}
+
+# Resolve port: use environment variable MCP_PORT if specified in .env and not explicitly overridden on command line
+if (-not $PSBoundParameters.ContainsKey('Port')) {
+    $envPort = $env:MCP_PORT
+    if (-not $envPort) { $envPort = Read-DotenvValue -Path $envPath -Key "MCP_PORT" }
+    if ($envPort) {
+        $Port = [int]$envPort
+        Write-Host "  Using port $Port configured in .env (MCP_PORT)..." -ForegroundColor Gray
+    }
+}
+Write-Host "Resolved port: $Port" -ForegroundColor Cyan
+
 # 1. Cleanup prior run
-Write-Host "[1/5] Killing previous mcp-kanboard / ngrok processes..." -ForegroundColor Cyan
+Write-Host "[1/5] Killing previous mcp-kanboard / ngrok processes on port $Port..." -ForegroundColor Cyan
 if (Test-Path $statePath) {
     try {
         $prev = Get-Content $statePath -Raw | ConvertFrom-Json
@@ -90,7 +114,7 @@ if (Test-Path $statePath) {
         }
     } catch {}
 }
-Get-Process -Name "ngrok" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Stop-NgrokOnPort -LocalPort $Port
 Stop-OnPort -LocalPort $Port
 Start-Sleep -Milliseconds 800
 
