@@ -5,6 +5,7 @@ __pycache__/
 venv/
 .env
 .claude/settings.local.json
+.web-mcp-state.json
 dist/
 build/
 .uv-cache/

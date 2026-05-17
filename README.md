@@ -89,6 +89,31 @@ uvx --refresh --from git+https://github.com/mrquanga3/mcp-kanboard mcp-kanboard 
 
 Then restart Claude Code.
 
+## Using it from claude.ai (web)
+
+claude.ai's "Custom Connectors" need a remote HTTPS MCP URL. Since Kanboard usually runs on `localhost`, the cleanest setup is to run the MCP locally with HTTP transport and expose it via an ngrok tunnel. A PowerShell helper does the wiring:
+
+```powershell
+.\scripts\start-web.ps1
+```
+
+The script kills any prior run, starts `mcp-kanboard --http` (bearer-protected), starts `ngrok http 8765`, reads the public URL from ngrok's local API, and prints:
+
+```
+Name:        Kanboard
+Remote URL:  https://<random>.ngrok-free.app/mcp
+Advanced settings -> Custom headers:
+  Authorization: Bearer <generated_token>
+```
+
+Paste those into claude.ai → Settings → Connectors → **Add custom connector**. To stop: `.\scripts\stop-web.ps1`.
+
+State (URL, token, PIDs) is cached in `.web-mcp-state.json` (gitignored) so re-running the script reliably kills the previous instance.
+
+Requirements: `ngrok` on PATH (run `ngrok config add-authtoken <YOUR_TOKEN>` once), `uv` on PATH.
+
+**Manual / non-Windows**: `MCP_BEARER_TOKEN=... uv run mcp-kanboard --http --port 8765` then point any tunnel at `127.0.0.1:8765`. The MCP endpoint is at path `/mcp`. Disable auth with `--insecure-no-auth` (NOT recommended).
+
 ## Using it from Claude Code
 
 Once registered, just describe what you want in natural language. Claude picks the right `kb_*` tool. Examples:

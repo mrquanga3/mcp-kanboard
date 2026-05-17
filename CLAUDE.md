@@ -99,6 +99,8 @@ Config lives in `C:\Users\ADMIN\.claude.json` under `mcpServers.kanboard`. To ch
 
 ## Things to NOT do
 
+- **Don't remove the dual-transport (stdio + http) flow in `server.py`.** stdio is what Claude Code spawns; `--http` is what `scripts\start-web.ps1` exposes to claude.ai web via ngrok. Both must keep working.
+- **Don't drop the bearer-auth middleware on the HTTP path.** It's the only thing standing between the public ngrok URL and full Kanboard write access. `--insecure-no-auth` exists for short manual tests only.
 - **Don't add an async transport.** stdio MCP throughput is fine with sync httpx; async doubles the code paths for no win.
 - **Don't add a caching layer.** Kanboard's API is fast enough; caching introduces correctness bugs for write-then-read flows.
 - **Don't expose multiple Kanboard instances in one process.** Switching is restart-based by design — keeps the env model simple.
