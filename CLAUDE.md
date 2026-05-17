@@ -45,6 +45,8 @@ Env vars (all read by `config.load_settings()`):
 - `KANBOARD_TIMEOUT` (default 30)
 - `KANBOARD_MAX_ATTACHMENT_MB` (default 25 — applies to both upload + download)
 - `KANBOARD_VERIFY_SSL` (default true; set false for self-signed remote)
+- `MCP_PASSPHRASE` (required in `--http` mode unless `--insecure-no-auth`) — gates the OAuth login form claude.ai redirects users to
+- `MCP_HTTP_HOST` / `MCP_HTTP_PORT` (default `127.0.0.1` / `8765`) — bind for `--http` mode
 
 ## Tool conventions
 
@@ -100,7 +102,9 @@ Config lives in `C:\Users\ADMIN\.claude.json` under `mcpServers.kanboard`. To ch
 ## Things to NOT do
 
 - **Don't remove the dual-transport (stdio + http) flow in `server.py`.** stdio is what Claude Code spawns; `--http` is what `scripts\start-web.ps1` exposes to claude.ai web via ngrok. Both must keep working.
-- **Don't drop the bearer-auth middleware on the HTTP path.** It's the only thing standing between the public ngrok URL and full Kanboard write access. `--insecure-no-auth` exists for short manual tests only.
+- **Don't drop the OAuth bearer middleware on the HTTP path.** It's the only thing standing between the public ngrok URL and full Kanboard write access. `--insecure-no-auth` exists for short manual tests only.
+- **Don't store OAuth tokens anywhere persistent without thinking it through.** Current design keeps them in process memory (`OAuthState` dicts) on purpose — server restart wipes them and claude.ai silently re-auths via refresh token / passphrase form. Disk persistence introduces a leak vector and migration headaches.
+- **Don't switch the passphrase comparison to `==`.** `hmac.compare_digest` matters — same-time comparison protects against timing attacks even on a single-user server.
 - **Don't add an async transport.** stdio MCP throughput is fine with sync httpx; async doubles the code paths for no win.
 - **Don't add a caching layer.** Kanboard's API is fast enough; caching introduces correctness bugs for write-then-read flows.
 - **Don't expose multiple Kanboard instances in one process.** Switching is restart-based by design — keeps the env model simple.

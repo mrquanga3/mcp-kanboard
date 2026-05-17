@@ -1,43 +1,47 @@
 <#
 .SYNOPSIS
-  Start mcp-kanboard HTTP transport + ngrok tunnel, print connector info for claude.ai.
+  Start mcp-kanboard HTTP transport + ngrok tunnel, print connector info
+  for claude.ai. Auth is OAuth + passphrase (set via MCP_PASSPHRASE).
 
 .DESCRIPTION
-  Kills any previous mcp-kanboard / ngrok process, generates (or reuses) a bearer
-  token, starts the MCP HTTP server on $Port, opens an ngrok tunnel to it, queries
-  the ngrok local API for the public URL, and prints everything you need to paste
-  into claude.ai -> Connectors -> Add custom connector.
+  Kills any previous mcp-kanboard / ngrok process, reads MCP_PASSPHRASE
+  from .env if present, starts the MCP HTTP server on $Port, opens an
+  ngrok tunnel to it, queries the ngrok local API for the public URL,
+  and prints everything you need to paste into claude.ai -> Connectors
+  -> Add custom connector. claude.ai will redirect you to a passphrase
+  form once on connect.
 
-  State (URL, token, PIDs) is written to .web-mcp-state.json (gitignored) for
+  State (URL, PIDs) is written to .web-mcp-state.json (gitignored) for
   reuse / cleanup.
 
 .PARAMETER Port
   Local port for the MCP HTTP server. Default 8765.
 
-.PARAMETER BearerToken
-  Pre-existing bearer token to reuse. If omitted, a new 32-byte URL-safe token is
-  generated.
+.PARAMETER Passphrase
+  Override the passphrase from .env / env. NOT recommended (visible in
+  shell history); set MCP_PASSPHRASE in .env instead.
 
 .PARAMETER Insecure
-  Pass through --insecure-no-auth to mcp-kanboard. Skips bearer check (use ONLY
-  for a quick test).
+  Pass --insecure-no-auth to mcp-kanboard. No login required. Use ONLY
+  for a quick test, then stop immediately.
 
 .EXAMPLE
   .\scripts\start-web.ps1
 
 .EXAMPLE
-  .\scripts\start-web.ps1 -Port 9000 -BearerToken (Get-Content .bearer.txt)
+  .\scripts\start-web.ps1 -Insecure
 #>
 [CmdletBinding()]
 param(
     [int]$Port = 8765,
-    [string]$BearerToken = "",
+    [string]$Passphrase = "",
     [switch]$Insecure
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $statePath = Join-Path $repoRoot ".web-mcp-state.json"
+$envPath = Join-Path $repoRoot ".env"
 
 function Stop-OnPort {
     param([int]$LocalPort)
@@ -51,15 +55,28 @@ function Stop-OnPort {
     }
 }
 
-# 1. Reuse prior state for cleanup
+function Read-DotenvValue {
+    param([string]$Path, [string]$Key)
+    if (-not (Test-Path $Path)) { return "" }
+    foreach ($line in Get-Content $Path) {
+        $trimmed = $line.Trim()
+        if ($trimmed -eq "" -or $trimmed.StartsWith("#")) { continue }
+        $eq = $trimmed.IndexOf("=")
+        if ($eq -lt 1) { continue }
+        $k = $trimmed.Substring(0, $eq).Trim()
+        $v = $trimmed.Substring($eq + 1).Trim().Trim('"').Trim("'")
+        if ($k -eq $Key) { return $v }
+    }
+    return ""
+}
+
+# 1. Cleanup prior run
 Write-Host "[1/5] Killing previous mcp-kanboard / ngrok processes..." -ForegroundColor Cyan
 if (Test-Path $statePath) {
     try {
         $prev = Get-Content $statePath -Raw | ConvertFrom-Json
         foreach ($oldPid in @($prev.mcp_pid, $prev.ngrok_pid)) {
-            if ($oldPid) {
-                Stop-Process -Id $oldPid -Force -ErrorAction SilentlyContinue
-            }
+            if ($oldPid) { Stop-Process -Id $oldPid -Force -ErrorAction SilentlyContinue }
         }
     } catch {}
 }
@@ -67,17 +84,20 @@ Get-Process -Name "ngrok" -ErrorAction SilentlyContinue | Stop-Process -Force -E
 Stop-OnPort -LocalPort $Port
 Start-Sleep -Milliseconds 800
 
-# 2. Bearer token
+# 2. Resolve passphrase
 if (-not $Insecure) {
-    if (-not $BearerToken) {
-        $bytes = New-Object byte[] 32
-        [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-        $BearerToken = [Convert]::ToBase64String($bytes).Replace("+","-").Replace("/","_").TrimEnd("=")
-        Write-Host "[!] Generated new bearer token (will be required in claude.ai header)" -ForegroundColor Yellow
+    if (-not $Passphrase) { $Passphrase = $env:MCP_PASSPHRASE }
+    if (-not $Passphrase) { $Passphrase = Read-DotenvValue -Path $envPath -Key "MCP_PASSPHRASE" }
+    if (-not $Passphrase) {
+        Write-Host ""
+        Write-Host "[!] MCP_PASSPHRASE not found in environment or .env." -ForegroundColor Red
+        Write-Host "    Add a line to .env:    MCP_PASSPHRASE=<any string you'll remember>"
+        Write-Host "    Then re-run this script. Or pass -Insecure for a no-auth test."
+        exit 1
     }
-    $env:MCP_BEARER_TOKEN = $BearerToken
+    $env:MCP_PASSPHRASE = $Passphrase
 } else {
-    Remove-Item Env:\MCP_BEARER_TOKEN -ErrorAction SilentlyContinue
+    Remove-Item Env:\MCP_PASSPHRASE -ErrorAction SilentlyContinue
 }
 
 # 3. Start MCP HTTP
@@ -92,8 +112,6 @@ if ($mcpProc.HasExited) {
     Write-Host "[!] mcp-kanboard exited immediately (exit $($mcpProc.ExitCode)). Check Kanboard env vars in .env." -ForegroundColor Red
     exit 1
 }
-
-# Confirm port is listening
 $listening = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
 if (-not $listening) {
     Write-Host "[!] Port $Port is not listening after 3s. mcp-kanboard may have failed silently." -ForegroundColor Red
@@ -107,7 +125,7 @@ $ngrokProc = Start-Process -FilePath "ngrok" -ArgumentList @("http", "$Port", "-
     -PassThru -WindowStyle Hidden
 Start-Sleep -Seconds 3
 
-# 5. Read public URL from ngrok's local API
+# 5. Read public URL
 Write-Host "[4/5] Reading public URL from http://127.0.0.1:4040/api/tunnels..." -ForegroundColor Cyan
 $publicUrl = $null
 for ($i = 0; $i -lt 12; $i++) {
@@ -119,7 +137,7 @@ for ($i = 0; $i -lt 12; $i++) {
     Start-Sleep -Seconds 1
 }
 if (-not $publicUrl) {
-    Write-Host "[!] Could not read ngrok URL. Is ngrok authenticated? Try: ngrok config add-authtoken <YOUR_TOKEN>" -ForegroundColor Red
+    Write-Host "[!] Could not read ngrok URL. Authenticated? Try: ngrok config add-authtoken <TOKEN>" -ForegroundColor Red
     Stop-Process -Id $mcpProc.Id -Force -ErrorAction SilentlyContinue
     Stop-Process -Id $ngrokProc.Id -Force -ErrorAction SilentlyContinue
     exit 1
@@ -128,12 +146,11 @@ $mcpUrl = "$publicUrl/mcp"
 
 # 6. Save state
 $state = [PSCustomObject]@{
-    public_url   = $mcpUrl
-    bearer_token = $BearerToken
-    insecure     = [bool]$Insecure
-    mcp_pid      = $mcpProc.Id
-    ngrok_pid    = $ngrokProc.Id
-    started_at   = (Get-Date).ToString("o")
+    public_url = $mcpUrl
+    insecure   = [bool]$Insecure
+    mcp_pid    = $mcpProc.Id
+    ngrok_pid  = $ngrokProc.Id
+    started_at = (Get-Date).ToString("o")
 }
 $state | ConvertTo-Json | Set-Content -Encoding UTF8 $statePath
 
@@ -145,9 +162,11 @@ Write-Host "============================================================" -Foreg
 Write-Host ""
 Write-Host "  Name:        Kanboard"
 Write-Host ("  Remote URL:  {0}" -f $mcpUrl) -ForegroundColor White
+Write-Host ""
 if (-not $Insecure) {
-    Write-Host "  Advanced settings -> Custom headers:"
-    Write-Host ("    Authorization: Bearer {0}" -f $BearerToken) -ForegroundColor White
+    Write-Host "  Auth:        OAuth + passphrase" -ForegroundColor Green
+    Write-Host "  On connect:  claude.ai will pop a browser window."
+    Write-Host "               Type your MCP_PASSPHRASE there, click Authorize."
 } else {
     Write-Host "  Auth:        NONE (insecure mode)" -ForegroundColor Yellow
 }
@@ -155,6 +174,6 @@ Write-Host ""
 Write-Host "MCP PID:    $($mcpProc.Id)"
 Write-Host "ngrok PID:  $($ngrokProc.Id)"
 Write-Host ""
-Write-Host "To stop:    .\scripts\stop-web.ps1   (or kill PIDs above)"
+Write-Host "To stop:    .\scripts\stop-web.ps1"
 Write-Host "State file: $statePath (gitignored)"
 Write-Host ""

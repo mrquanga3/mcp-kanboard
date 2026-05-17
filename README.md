@@ -91,28 +91,43 @@ Then restart Claude Code.
 
 ## Using it from claude.ai (web)
 
-claude.ai's "Custom Connectors" need a remote HTTPS MCP URL. Since Kanboard usually runs on `localhost`, the cleanest setup is to run the MCP locally with HTTP transport and expose it via an ngrok tunnel. A PowerShell helper does the wiring:
+claude.ai's "Custom Connectors" require a remote HTTPS MCP URL and discover auth via OAuth 2.1. Kanboard usually runs on `localhost`, so the cleanest setup is to host the MCP locally with HTTP transport and expose it through an ngrok tunnel. A PowerShell helper does the wiring.
 
+**One-time setup:**
+1. Install [ngrok](https://ngrok.com/download), run `ngrok config add-authtoken <YOUR_TOKEN>` once.
+2. Pick a passphrase and add it to `.env`:
+   ```
+   MCP_PASSPHRASE=any_string_youll_remember
+   ```
+
+**Start:**
 ```powershell
 .\scripts\start-web.ps1
 ```
 
-The script kills any prior run, starts `mcp-kanboard --http` (bearer-protected), starts `ngrok http 8765`, reads the public URL from ngrok's local API, and prints:
+The script kills any prior run, starts `mcp-kanboard --http` (OAuth-protected), starts `ngrok http 8765`, reads the public URL from ngrok's local API, and prints:
 
 ```
 Name:        Kanboard
 Remote URL:  https://<random>.ngrok-free.app/mcp
-Advanced settings -> Custom headers:
-  Authorization: Bearer <generated_token>
+Auth:        OAuth + passphrase
+On connect:  claude.ai will pop a browser window.
+             Type your MCP_PASSPHRASE there, click Authorize.
 ```
 
-Paste those into claude.ai → Settings → Connectors → **Add custom connector**. To stop: `.\scripts\stop-web.ps1`.
+In claude.ai → Settings → Connectors → **Add custom connector**, paste the Name and Remote URL (leave Advanced settings empty). Click Add. claude.ai pops a browser window — type the passphrase, click Authorize, done. The connector caches the issued tokens; you won't be asked again until the server restarts or refresh tokens expire (30 days).
 
-State (URL, token, PIDs) is cached in `.web-mcp-state.json` (gitignored) so re-running the script reliably kills the previous instance.
+**Stop:** `.\scripts\stop-web.ps1`
 
-Requirements: `ngrok` on PATH (run `ngrok config add-authtoken <YOUR_TOKEN>` once), `uv` on PATH.
+**State**: `.web-mcp-state.json` (gitignored) caches URL and PIDs so re-running the script reliably kills the previous instance. Issued OAuth tokens live in process memory — server restart invalidates them and claude.ai silently re-pops the passphrase form.
 
-**Manual / non-Windows**: `MCP_BEARER_TOKEN=... uv run mcp-kanboard --http --port 8765` then point any tunnel at `127.0.0.1:8765`. The MCP endpoint is at path `/mcp`. Disable auth with `--insecure-no-auth` (NOT recommended).
+**Manual / non-Windows**: `MCP_PASSPHRASE=xxx uv run mcp-kanboard --http --port 8765` then point any tunnel at `127.0.0.1:8765`. MCP endpoint at `/mcp`; OAuth endpoints at `/authorize`, `/token`, `/register`, and `/.well-known/oauth-*`. Use `--insecure-no-auth` for a quick test without OAuth (NOT recommended — anyone with the URL gets full Kanboard access).
+
+**Security notes**:
+- Passphrase lives only in `.env` (gitignored) and never leaves your machine. The form's POST is HTTPS via ngrok.
+- Token issuance uses PKCE S256; access tokens last 1h, refresh tokens 30d.
+- ngrok-free URLs rotate on every restart — claude.ai will mark the old connector offline and you'll need to update its URL.
+- For multi-user or production-grade auth (Google login, etc.), put a Cloudflare Tunnel + Access policy in front instead of ngrok.
 
 ## Using it from Claude Code
 

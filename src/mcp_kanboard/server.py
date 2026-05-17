@@ -18,7 +18,8 @@ def _build(host: str = "127.0.0.1", port: int = 8765, disable_host_check: bool =
     kwargs: dict = {"host": host, "port": port}
     if disable_host_check:
         # In --http mode we sit behind a tunnel (e.g. ngrok) whose Host header is
-        # not 127.0.0.1/localhost. Bearer auth replaces the DNS-rebinding guard.
+        # not 127.0.0.1/localhost. OAuth bearer auth (or --insecure-no-auth)
+        # replaces the DNS-rebinding guard.
         kwargs["transport_security"] = TransportSecuritySettings(
             enable_dns_rebinding_protection=False
         )
@@ -31,51 +32,22 @@ _CANONICAL_ACCEPT = b"application/json, text/event-stream"
 
 
 def _normalize_accept_asgi(app):
-    """Force the Accept header to MCP's required value.
+    """Force Accept to MCP's required value.
 
-    FastMCP's streamable-http handler 406s any request whose Accept header
-    doesn't include both 'application/json' and 'text/event-stream'. Some
-    MCP clients (notably claude.ai's connector backend) send 'Accept: */*'
-    and get rejected. MCP only ever returns those two content types, so
-    rewriting the header is safe.
+    Some clients (claude.ai backend) send 'Accept: */*' and FastMCP 406s them
+    because the streamable-http handler insists on both 'application/json' and
+    'text/event-stream'. MCP only ever responds with those, so the rewrite is
+    semantically safe.
     """
 
     async def middleware(scope, receive, send):
         if scope["type"] != "http":
             await app(scope, receive, send)
             return
-        raw_headers = list(scope.get("headers") or [])
-        rewritten = [(k, v) for k, v in raw_headers if k.lower() != b"accept"]
+        rewritten = [(k, v) for k, v in (scope.get("headers") or []) if k.lower() != b"accept"]
         rewritten.append((b"accept", _CANONICAL_ACCEPT))
         scope = dict(scope)
         scope["headers"] = rewritten
-        await app(scope, receive, send)
-
-    return middleware
-
-
-def _bearer_auth_asgi(app, token: str):
-    expected = f"Bearer {token}".encode()
-
-    async def middleware(scope, receive, send):
-        if scope["type"] != "http":
-            await app(scope, receive, send)
-            return
-        headers = dict(scope.get("headers") or [])
-        if headers.get(b"authorization", b"").strip() != expected:
-            body = b'{"error":"unauthorized"}'
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 401,
-                    "headers": [
-                        (b"content-type", b"application/json"),
-                        (b"content-length", str(len(body)).encode()),
-                    ],
-                }
-            )
-            await send({"type": "http.response.body", "body": body})
-            return
         await app(scope, receive, send)
 
     return middleware
@@ -86,7 +58,7 @@ def main() -> None:
     parser.add_argument(
         "--http",
         action="store_true",
-        help="Run with streamable-http transport (for remote MCP clients like claude.ai). Default is stdio.",
+        help="Run with streamable-http transport (for remote clients like claude.ai). Default is stdio.",
     )
     parser.add_argument(
         "--host",
@@ -102,7 +74,7 @@ def main() -> None:
     parser.add_argument(
         "--insecure-no-auth",
         action="store_true",
-        help="Skip bearer-token check in --http mode. ONLY use behind a private tunnel.",
+        help="Skip OAuth/passphrase in --http mode. ONLY for short manual tests.",
     )
     args = parser.parse_args()
 
@@ -118,8 +90,8 @@ def main() -> None:
 
     import uvicorn
 
-    app = server.streamable_http_app()
-    app = _normalize_accept_asgi(app)
+    mcp_app = server.streamable_http_app()
+    mcp_app = _normalize_accept_asgi(mcp_app)
     path = server.settings.streamable_http_path
 
     if args.insecure_no_auth:
@@ -127,16 +99,33 @@ def main() -> None:
             "[mcp-kanboard] WARNING: --insecure-no-auth set; the HTTP endpoint has NO authentication.",
             file=sys.stderr,
         )
+        app = mcp_app
     else:
-        token = os.environ.get("MCP_BEARER_TOKEN", "").strip()
-        if not token:
+        passphrase = os.environ.get("MCP_PASSPHRASE", "").strip()
+        if not passphrase:
             print(
-                "[mcp-kanboard] MCP_BEARER_TOKEN env var is required in --http mode "
+                "[mcp-kanboard] MCP_PASSPHRASE env var is required in --http mode "
                 "(or pass --insecure-no-auth to disable auth).",
                 file=sys.stderr,
             )
             sys.exit(2)
-        app = _bearer_auth_asgi(app, token)
+
+        from mcp_kanboard.oauth import (
+            OAuthState,
+            build_oauth_app,
+            compose_app,
+            oauth_bearer_asgi,
+        )
+
+        state = OAuthState(passphrase)
+        oauth_app = build_oauth_app(state)
+        protected_mcp = oauth_bearer_asgi(mcp_app, state)
+        app = compose_app(protected_mcp, oauth_app)
+        print(
+            "[mcp-kanboard] OAuth passphrase auth enabled. "
+            f"Login form at /authorize. MCP at {path}.",
+            file=sys.stderr,
+        )
 
     print(
         f"[mcp-kanboard] HTTP transport listening on http://{args.host}:{args.port}{path}",
