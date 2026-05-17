@@ -99,4 +99,4 @@ class KanboardClient:
 
 
 def _is_mutating(method: str) -> bool:
-    return method.startswith(("create", "update", "remove", "move", "set", "enable", "disable", "open", "close", "duplicate", "change"))
+    return method.startswith(("create", "update", "remove", "move", "set", "enable", "disable", "open", "close", "duplicate", "change", "add"))
