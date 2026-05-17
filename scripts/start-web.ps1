@@ -83,7 +83,7 @@ function Read-DotenvValue {
 function Stop-NgrokOnPort {
     param([int]$LocalPort)
     # Only kill ngrok agents whose command line targets EXACTLY our port.
-    # \b at the end prevents "8765" from matching "87650" or "87651" — so
+    # \b at the end prevents "8765" from matching "87650" or "87651" -- so
     # ngrok agents tunneling other MCPs (different ports) are left alone.
     $pattern = "http\s+$LocalPort\b"
     try {
@@ -93,7 +93,7 @@ function Stop-NgrokOnPort {
                 Write-Host "  Stopping ngrok (PID $($p.ProcessId)) targeting port $LocalPort..."
                 Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
             } else {
-                Write-Host "  Leaving ngrok (PID $($p.ProcessId)) alone — different port." -ForegroundColor Gray
+                Write-Host "  Leaving ngrok (PID $($p.ProcessId)) alone -- different port." -ForegroundColor Gray
             }
         }
     } catch {}
@@ -237,8 +237,8 @@ if ($ngrokProc.HasExited) {
 # and claude.ai would land on the wrong server's OAuth form.
 Write-Host "[4/5] Reading public URL for port $Port (probing ngrok APIs 4040-4044)..." -ForegroundColor Cyan
 $publicUrl = $null
-$portPattern = ":$Port(`$|/|`?)"
-# Total budget ~24s: 12 outer attempts × (5 ports × 0.4s timeout) + 1s sleep
+$portPattern = ":$Port(`$|/)"
+# Total budget ~24s: 12 outer attempts x (5 ports x 1s timeout) + 1s sleep
 for ($i = 0; $i -lt 12; $i++) {
     foreach ($apiPort in 4040..4044) {
         try {
