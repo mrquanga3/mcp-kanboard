@@ -82,12 +82,18 @@ function Read-DotenvValue {
 
 function Stop-NgrokOnPort {
     param([int]$LocalPort)
+    # Only kill ngrok agents whose command line targets EXACTLY our port.
+    # \b at the end prevents "8765" from matching "87650" or "87651" — so
+    # ngrok agents tunneling other MCPs (different ports) are left alone.
+    $pattern = "http\s+$LocalPort\b"
     try {
         $procs = Get-CimInstance Win32_Process -Filter "Name = 'ngrok.exe'" -ErrorAction SilentlyContinue
         foreach ($p in $procs) {
-            if ($p.CommandLine -match "http\s+$LocalPort") {
+            if ($p.CommandLine -match $pattern) {
                 Write-Host "  Stopping ngrok (PID $($p.ProcessId)) targeting port $LocalPort..."
                 Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+            } else {
+                Write-Host "  Leaving ngrok (PID $($p.ProcessId)) alone — different port." -ForegroundColor Gray
             }
         }
     } catch {}
@@ -183,24 +189,60 @@ if ($mcpProc.HasExited -or -not $listening) {
 }
 Write-Host "  MCP listening on http://127.0.0.1:$Port/mcp (PID $($mcpProc.Id))"
 
-# 4. Start ngrok
+# 4. Start ngrok (capture stdout/stderr so we can show why it died if it dies)
+# Resolve dedicated authtoken from env / .env so this MCP uses its own ngrok
+# account, independent of any other agent (e.g. mcp-gitlab) using a different
+# token. ngrok reads NGROK_AUTHTOKEN natively when launched.
 Write-Host "[3/5] Starting ngrok tunnel..." -ForegroundColor Cyan
+$ngrokToken = $env:KANBOARD_NGROK_AUTHTOKEN
+if (-not $ngrokToken) { $ngrokToken = Read-DotenvValue -Path $envPath -Key "KANBOARD_NGROK_AUTHTOKEN" }
+if (-not $ngrokToken) { $ngrokToken = Read-DotenvValue -Path $envPath -Key "NGROK_AUTHTOKEN" }
+if ($ngrokToken) {
+    $env:NGROK_AUTHTOKEN = $ngrokToken
+    Write-Host "  Using NGROK_AUTHTOKEN from .env (dedicated kanboard token)." -ForegroundColor Gray
+} else {
+    Write-Host "  No KANBOARD_NGROK_AUTHTOKEN in .env; falling back to ngrok global config." -ForegroundColor Gray
+}
+
+$ngrokLog = Join-Path $repoRoot "ngrok.log"
+$ngrokErr = Join-Path $repoRoot "ngrok-err.log"
+Remove-Item $ngrokLog -ErrorAction SilentlyContinue
+Remove-Item $ngrokErr -ErrorAction SilentlyContinue
 $ngrokProc = Start-Process -FilePath "ngrok" -ArgumentList @("http", "$Port", "--log=stdout") `
-    -PassThru -WindowStyle Hidden
-Start-Sleep -Seconds 3
+    -PassThru -WindowStyle Hidden `
+    -RedirectStandardOutput $ngrokLog -RedirectStandardError $ngrokErr
+Start-Sleep -Seconds 2
+
+if ($ngrokProc.HasExited) {
+    Write-Host "[!] ngrok exited immediately (exit $($ngrokProc.ExitCode))." -ForegroundColor Red
+    if (Test-Path $ngrokLog) {
+        Write-Host "--- ngrok stdout ---" -ForegroundColor Yellow
+        Get-Content $ngrokLog
+    }
+    if (Test-Path $ngrokErr) {
+        Write-Host "--- ngrok stderr ---" -ForegroundColor Yellow
+        Get-Content $ngrokErr
+    }
+    Write-Host "Common causes:" -ForegroundColor Yellow
+    Write-Host "  - Another ngrok agent already running (free plan = 1 agent only)" -ForegroundColor Yellow
+    Write-Host "  - Missing authtoken: ngrok config add-authtoken <TOKEN>" -ForegroundColor Yellow
+    Stop-Process -Id $mcpProc.Id -Force -ErrorAction SilentlyContinue
+    exit 1
+}
 
 # 5. Read public URL
 # Probe each ngrok agent's local API (4040, 4041, ...) and pick the tunnel
 # whose config.addr points at OUR $Port. Without this filter, when another
 # ngrok agent (e.g. for mcp-gitlab) is already running, we'd grab its URL
 # and claude.ai would land on the wrong server's OAuth form.
-Write-Host "[4/5] Reading public URL for port $Port from ngrok local APIs (4040-4044)..." -ForegroundColor Cyan
+Write-Host "[4/5] Reading public URL for port $Port (probing ngrok APIs 4040-4044)..." -ForegroundColor Cyan
 $publicUrl = $null
-$portPattern = ":$Port(`$|/)"
+$portPattern = ":$Port(`$|/|`?)"
+# Total budget ~24s: 12 outer attempts × (5 ports × 0.4s timeout) + 1s sleep
 for ($i = 0; $i -lt 12; $i++) {
     foreach ($apiPort in 4040..4044) {
         try {
-            $tunnels = Invoke-RestMethod -Uri "http://127.0.0.1:$apiPort/api/tunnels" -TimeoutSec 2 -ErrorAction Stop
+            $tunnels = Invoke-RestMethod -Uri "http://127.0.0.1:$apiPort/api/tunnels" -TimeoutSec 1 -ErrorAction Stop
             $https = $tunnels.tunnels | Where-Object {
                 $_.proto -eq "https" -and $_.config.addr -match $portPattern
             } | Select-Object -First 1
@@ -208,14 +250,25 @@ for ($i = 0; $i -lt 12; $i++) {
         } catch {}
     }
     if ($publicUrl) { break }
+    if ($ngrokProc.HasExited) {
+        Write-Host "[!] ngrok died while we were waiting for its tunnel." -ForegroundColor Red
+        break
+    }
     Start-Sleep -Seconds 1
 }
 if (-not $publicUrl) {
     Write-Host "[!] Could not find an ngrok tunnel for port $Port." -ForegroundColor Red
-    Write-Host "    If another ngrok agent is already running (e.g. for another MCP)," -ForegroundColor Yellow
-    Write-Host "    the free plan only allows one agent. Stop the other one or use a" -ForegroundColor Yellow
-    Write-Host "    paid plan with multiple tunnels under a single agent." -ForegroundColor Yellow
-    Write-Host "    Otherwise check: ngrok config add-authtoken <TOKEN>" -ForegroundColor Yellow
+    if (Test-Path $ngrokLog) {
+        Write-Host "--- ngrok stdout (last 20 lines) ---" -ForegroundColor Yellow
+        Get-Content $ngrokLog -Tail 20
+    }
+    if (Test-Path $ngrokErr) {
+        Write-Host "--- ngrok stderr (last 20 lines) ---" -ForegroundColor Yellow
+        Get-Content $ngrokErr -Tail 20
+    }
+    Write-Host "If another ngrok agent is already running (e.g. for mcp-gitlab)," -ForegroundColor Yellow
+    Write-Host "the free plan only allows one agent. Stop that one first, or use" -ForegroundColor Yellow
+    Write-Host "a paid plan with multiple tunnels under one agent (ngrok.yml)." -ForegroundColor Yellow
     Stop-Process -Id $mcpProc.Id -Force -ErrorAction SilentlyContinue
     Stop-Process -Id $ngrokProc.Id -Force -ErrorAction SilentlyContinue
     exit 1
