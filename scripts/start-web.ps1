@@ -116,11 +116,13 @@ $mcpArgs = @("run", "mcp-kanboard", "--http", "--port", "$Port")
 if ($Insecure) { $mcpArgs += "--insecure-no-auth" }
 
 $logPath = Join-Path $repoRoot "mcp-server.log"
+$errPath = Join-Path $repoRoot "mcp-server-err.log"
 Remove-Item $logPath -ErrorAction SilentlyContinue
+Remove-Item $errPath -ErrorAction SilentlyContinue
 
 $mcpProc = Start-Process -FilePath "uv" -ArgumentList $mcpArgs `
     -WorkingDirectory $repoRoot -PassThru -WindowStyle Hidden `
-    -RedirectStandardOutput $logPath -RedirectStandardError $logPath
+    -RedirectStandardOutput $logPath -RedirectStandardError $errPath
 
 Write-Host "  Waiting up to 12s for port $Port to start listening..." -ForegroundColor Gray
 $listening = $false
@@ -147,8 +149,12 @@ if ($mcpProc.HasExited -or -not $listening) {
         Write-Host "--- Server Log Output (from mcp-server.log) ---" -ForegroundColor Yellow
         Get-Content $logPath
         Write-Host "------------------------------------------------" -ForegroundColor Yellow
-    } else {
-        Write-Host "[!] No log file found at $logPath." -ForegroundColor Red
+    }
+    if (Test-Path $errPath) {
+        Write-Host ""
+        Write-Host "--- Server Error Output (from mcp-server-err.log) ---" -ForegroundColor Red
+        Get-Content $errPath
+        Write-Host "----------------------------------------------------" -ForegroundColor Red
     }
     exit 1
 }
