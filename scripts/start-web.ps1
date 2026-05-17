@@ -190,25 +190,36 @@ if ($mcpProc.HasExited -or -not $listening) {
 Write-Host "  MCP listening on http://127.0.0.1:$Port/mcp (PID $($mcpProc.Id))"
 
 # 4. Start ngrok (capture stdout/stderr so we can show why it died if it dies)
-# Resolve dedicated authtoken from env / .env so this MCP uses its own ngrok
-# account, independent of any other agent (e.g. mcp-gitlab) using a different
-# token. ngrok reads NGROK_AUTHTOKEN natively when launched.
+# Resolve dedicated authtoken + static domain from .env so this MCP uses its
+# own ngrok account, independent of any other agent (e.g. mcp-gitlab) using a
+# different token. CLI flags --authtoken/--domain have HIGHEST precedence and
+# override ngrok's global config file -- without them ngrok may fall back to
+# the global config's token + default static domain (causing ERR_NGROK_334
+# "endpoint already online" when the other MCP owns that domain).
 Write-Host "[3/5] Starting ngrok tunnel..." -ForegroundColor Cyan
 $ngrokToken = $env:KANBOARD_NGROK_AUTHTOKEN
 if (-not $ngrokToken) { $ngrokToken = Read-DotenvValue -Path $envPath -Key "KANBOARD_NGROK_AUTHTOKEN" }
 if (-not $ngrokToken) { $ngrokToken = Read-DotenvValue -Path $envPath -Key "NGROK_AUTHTOKEN" }
+$ngrokDomain = $env:KANBOARD_NGROK_DOMAIN
+if (-not $ngrokDomain) { $ngrokDomain = Read-DotenvValue -Path $envPath -Key "KANBOARD_NGROK_DOMAIN" }
+
+$ngrokArgs = @("http", "$Port", "--log=stdout")
 if ($ngrokToken) {
-    $env:NGROK_AUTHTOKEN = $ngrokToken
-    Write-Host "  Using NGROK_AUTHTOKEN from .env (dedicated kanboard token)." -ForegroundColor Gray
+    $ngrokArgs += @("--authtoken", $ngrokToken)
+    Write-Host "  Using --authtoken from .env (overrides ngrok global config)." -ForegroundColor Gray
 } else {
-    Write-Host "  No KANBOARD_NGROK_AUTHTOKEN in .env; falling back to ngrok global config." -ForegroundColor Gray
+    Write-Host "  No KANBOARD_NGROK_AUTHTOKEN in .env; using ngrok global config token." -ForegroundColor Gray
+}
+if ($ngrokDomain) {
+    $ngrokArgs += @("--url", "https://$ngrokDomain")
+    Write-Host "  Using --url https://$ngrokDomain (account static domain)." -ForegroundColor Gray
 }
 
 $ngrokLog = Join-Path $repoRoot "ngrok.log"
 $ngrokErr = Join-Path $repoRoot "ngrok-err.log"
 Remove-Item $ngrokLog -ErrorAction SilentlyContinue
 Remove-Item $ngrokErr -ErrorAction SilentlyContinue
-$ngrokProc = Start-Process -FilePath "ngrok" -ArgumentList @("http", "$Port", "--log=stdout") `
+$ngrokProc = Start-Process -FilePath "ngrok" -ArgumentList $ngrokArgs `
     -PassThru -WindowStyle Hidden `
     -RedirectStandardOutput $ngrokLog -RedirectStandardError $ngrokErr
 Start-Sleep -Seconds 2
@@ -230,31 +241,58 @@ if ($ngrokProc.HasExited) {
     exit 1
 }
 
-# 5. Read public URL
-# Probe each ngrok agent's local API (4040, 4041, ...) and pick the tunnel
-# whose config.addr points at OUR $Port. Without this filter, when another
-# ngrok agent (e.g. for mcp-gitlab) is already running, we'd grab its URL
-# and claude.ai would land on the wrong server's OAuth form.
-Write-Host "[4/5] Reading public URL for port $Port (probing ngrok APIs 4040-4044)..." -ForegroundColor Cyan
+# 5. Resolve public URL
+# Fast path: when KANBOARD_NGROK_DOMAIN is set, ngrok was launched with
+# --url https://<domain>, so the public URL is known up front -- no need to
+# probe the local API at all. Slow path (no explicit domain): probe each
+# ngrok agent's local API (4040, 4041, ...) and pick the tunnel whose
+# config.addr points at OUR $Port. Without this filter, another running
+# ngrok agent (e.g. for mcp-gitlab) would have its URL grabbed instead and
+# claude.ai would land on the wrong server's OAuth form.
 $publicUrl = $null
-$portPattern = ":$Port(`$|/)"
-# Total budget ~24s: 12 outer attempts x (5 ports x 1s timeout) + 1s sleep
-for ($i = 0; $i -lt 12; $i++) {
-    foreach ($apiPort in 4040..4044) {
+if ($ngrokDomain) {
+    Write-Host "[4/5] Using static domain from .env: https://$ngrokDomain" -ForegroundColor Cyan
+    # Still wait briefly for ngrok to actually publish (catches token errors).
+    for ($i = 0; $i -lt 8; $i++) {
+        if ($ngrokProc.HasExited) {
+            Write-Host "[!] ngrok died after launch -- see logs above." -ForegroundColor Red
+            break
+        }
+        Start-Sleep -Seconds 1
+        # Optional: confirm via local API if reachable
         try {
-            $tunnels = Invoke-RestMethod -Uri "http://127.0.0.1:$apiPort/api/tunnels" -TimeoutSec 1 -ErrorAction Stop
-            $https = $tunnels.tunnels | Where-Object {
-                $_.proto -eq "https" -and $_.config.addr -match $portPattern
-            } | Select-Object -First 1
-            if ($https) { $publicUrl = $https.public_url; break }
+            $tunnels = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 1 -ErrorAction Stop
+            if ($tunnels.tunnels | Where-Object { $_.public_url -match $ngrokDomain }) {
+                $publicUrl = "https://$ngrokDomain"
+                break
+            }
         } catch {}
     }
-    if ($publicUrl) { break }
-    if ($ngrokProc.HasExited) {
-        Write-Host "[!] ngrok died while we were waiting for its tunnel." -ForegroundColor Red
-        break
+    if (-not $publicUrl -and -not $ngrokProc.HasExited) {
+        # Trust the explicit domain even if local API isn't reachable on 4040
+        $publicUrl = "https://$ngrokDomain"
     }
-    Start-Sleep -Seconds 1
+} else {
+    Write-Host "[4/5] Reading public URL for port $Port (probing ngrok APIs 4040-4044)..." -ForegroundColor Cyan
+    $portPattern = ":$Port(`$|/)"
+    # Total budget ~24s: 12 outer attempts x (5 ports x 1s timeout) + 1s sleep
+    for ($i = 0; $i -lt 12; $i++) {
+        foreach ($apiPort in 4040..4044) {
+            try {
+                $tunnels = Invoke-RestMethod -Uri "http://127.0.0.1:$apiPort/api/tunnels" -TimeoutSec 1 -ErrorAction Stop
+                $https = $tunnels.tunnels | Where-Object {
+                    $_.proto -eq "https" -and $_.config.addr -match $portPattern
+                } | Select-Object -First 1
+                if ($https) { $publicUrl = $https.public_url; break }
+            } catch {}
+        }
+        if ($publicUrl) { break }
+        if ($ngrokProc.HasExited) {
+            Write-Host "[!] ngrok died while we were waiting for its tunnel." -ForegroundColor Red
+            break
+        }
+        Start-Sleep -Seconds 1
+    }
 }
 if (-not $publicUrl) {
     Write-Host "[!] Could not find an ngrok tunnel for port $Port." -ForegroundColor Red
