@@ -5,16 +5,24 @@ import os
 import sys
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from mcp_kanboard.client import KanboardClient
 from mcp_kanboard.config import load_settings
 from mcp_kanboard.tools import register_all
 
 
-def _build(host: str = "127.0.0.1", port: int = 8765) -> FastMCP:
+def _build(host: str = "127.0.0.1", port: int = 8765, disable_host_check: bool = False) -> FastMCP:
     settings = load_settings()
     client = KanboardClient(settings)
-    instance = FastMCP("kanboard", host=host, port=port)
+    kwargs: dict = {"host": host, "port": port}
+    if disable_host_check:
+        # In --http mode we sit behind a tunnel (e.g. ngrok) whose Host header is
+        # not 127.0.0.1/localhost. Bearer auth replaces the DNS-rebinding guard.
+        kwargs["transport_security"] = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        )
+    instance = FastMCP("kanboard", **kwargs)
     register_all(instance, client)
     return instance
 
@@ -72,7 +80,7 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        server = _build(host=args.host, port=args.port)
+        server = _build(host=args.host, port=args.port, disable_host_check=args.http)
     except RuntimeError as exc:
         print(f"[mcp-kanboard] startup failed: {exc}", file=sys.stderr)
         sys.exit(2)
