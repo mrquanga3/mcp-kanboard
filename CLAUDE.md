@@ -48,6 +48,11 @@ Env vars (all read by `config.load_settings()`):
 - `MCP_PASSPHRASE` (required in `--http` mode unless `--insecure-no-auth`) — gates the OAuth login form claude.ai redirects users to
 - `MCP_HTTP_HOST` / `MCP_HTTP_PORT` (default `127.0.0.1` / `8765`) — bind for `--http` mode
 
+Env vars consumed by `scripts/start-web.ps1` only (not the server):
+- `MCP_PORT` — port override when run without `-Port`
+- `KANBOARD_NGROK_AUTHTOKEN` — passed to ngrok as `--authtoken`. Use when another MCP on this machine also uses ngrok and needs a different account. Falls back to `NGROK_AUTHTOKEN`, then ngrok global config.
+- `KANBOARD_NGROK_DOMAIN` — static domain (no `https://` prefix). Passed as `--url https://<domain>`. **Required** when the authtoken's account has another agent running, otherwise ngrok picks the wrong default domain → `ERR_NGROK_334`.
+
 ## Tool conventions
 
 - **Names**: `kb_<verb>_<noun>` snake_case. `kb_` prefix is the MCP-level disambiguator.
@@ -99,6 +104,19 @@ claude mcp add kanboard -s user \
 
 Config lives in `C:\Users\ADMIN\.claude.json` under `mcpServers.kanboard`. To change the token without re-running the command, edit that file directly and restart Claude Code.
 
+## Running alongside other ngrok-based MCPs
+
+ngrok free plan = 1 static domain per account. When this MCP runs in parallel with another (e.g. mcp-gitlab) on the same machine, both must NOT share the same ngrok account, otherwise the second agent fails with `ERR_NGROK_334` ("endpoint already online").
+
+Setup:
+1. Register a second ngrok account (separate email). It gets its own static domain like `chevron-handball-impromptu.ngrok-free.dev`.
+2. In `.env`, set both `KANBOARD_NGROK_AUTHTOKEN` (that account's token) and `KANBOARD_NGROK_DOMAIN` (that account's static domain, no scheme).
+3. `start-web.ps1` passes them as explicit CLI flags to ngrok (`--authtoken` + `--url https://<domain>`). CLI flags override ngrok global config — required because env-var-only setups can lose to a stale `ngrok config add-authtoken` from the other account.
+
+The script's cleanup (`Stop-NgrokOnPort`) only kills ngrok agents whose cmdline targets *this* MCP's `$Port` (matched with `\b` word boundary). Agents for other MCPs survive.
+
+When `KANBOARD_NGROK_DOMAIN` is set, the script skips probing `/api/tunnels` and trusts the explicit URL. When it's NOT set, the script probes ports 4040–4044 (second agent's web inspector bumps to 4041, third to 4042, etc.) and filters tunnels by `config.addr` containing `:$Port` to avoid picking up the wrong agent's tunnel.
+
 ## Things to NOT do
 
 - **Don't remove the dual-transport (stdio + http) flow in `server.py`.** stdio is what Claude Code spawns; `--http` is what `scripts\start-web.ps1` exposes to claude.ai web via ngrok. Both must keep working.
@@ -110,6 +128,9 @@ Config lives in `C:\Users\ADMIN\.claude.json` under `mcpServers.kanboard`. To ch
 - **Don't expose multiple Kanboard instances in one process.** Switching is restart-based by design — keeps the env model simple.
 - **Don't bypass the `confirm` guard.** It's the safety net for destructive ops; it must remain a positional/keyword param the LLM has to set explicitly.
 - **Don't retry mutating calls** on HTTP errors. Network-layer retry only (transport errors / read timeouts); 4xx/5xx are not retried to avoid duplicate creates/updates.
+- **Don't put non-ASCII characters in `scripts/*.ps1`.** Windows PowerShell 5.1 reads `.ps1` files without BOM as Windows-1252, not UTF-8. Em dashes (`—`), multiplication signs (`×`), curly quotes, etc. get mis-decoded and the parser breaks with cryptic "Missing expression after ','" errors on innocent comment lines. Stick to plain ASCII (`--`, `x`, straight quotes).
+- **Don't drop `--authtoken` / `--url` from the ngrok launch** when env vars are present. CLI flags are the only authoritative source — `NGROK_AUTHTOKEN` env var alone can lose to a previously-installed global config token (`ngrok config add-authtoken`), causing the wrong account to be used and `ERR_NGROK_334`.
+- **Don't widen `Stop-NgrokOnPort`'s cmdline regex** beyond `http\s+$LocalPort\b`. Removing `\b` makes port `8765` match `87650`, `87651`, etc., and could kill ngrok agents for unrelated MCPs.
 
 ## Out of scope (v1, intentional)
 
