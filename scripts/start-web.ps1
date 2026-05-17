@@ -95,8 +95,7 @@ function Stop-NgrokOnPort {
 
 # Resolve port: use environment variable MCP_PORT if specified in .env and not explicitly overridden on command line
 if (-not $PSBoundParameters.ContainsKey('Port')) {
-    $envPort = $env:MCP_PORT
-    if (-not $envPort) { $envPort = Read-DotenvValue -Path $envPath -Key "MCP_PORT" }
+    $envPort = Read-DotenvValue -Path $envPath -Key "MCP_PORT"
     if ($envPort) {
         $Port = [int]$envPort
         Write-Host "  Using port $Port configured in .env (MCP_PORT)..." -ForegroundColor Gray
